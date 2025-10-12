@@ -1,0 +1,9 @@
+*.db3 binary
+*.zip binary
+*.gz binary
+*.tar binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.mov binary
+
