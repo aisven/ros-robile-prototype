@@ -311,9 +311,8 @@ class PotentialFieldPlanner(LifecycleNode):
                 obs_dist_b_filtered = obs_dist_b[repulsion_mask]
 
                 if len(obs_dist_b_filtered) > 0:
-                    # use transformed distance for scalars
                     # compute repulsive velocity contributions
-                    # scalar magnitude based on distance in scanner frame
+                    # scalar magnitude based on distance in base_link frame
                     scalars = self.k_r * (1.0 / obs_dist_b_filtered - 1.0 / self.rho_0) / (obs_dist_b_filtered ** 2)
 
                     # direction away from obstacles in base_link frame (normalized)
