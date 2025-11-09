@@ -1,6 +1,9 @@
 # notebooks that must not be uploaded to GitHub
 hidden_notebooks/
 
+# local text files
+*.txt
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
