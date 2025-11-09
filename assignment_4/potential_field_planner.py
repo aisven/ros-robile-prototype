@@ -363,9 +363,17 @@ class PotentialFieldPlanner(LifecycleNode):
                 desired_direction = math.atan2(vy_total_b, vx_total_b)
 
             twist = Twist()
-            # twist.linear.x = max(0.0, min(self.v_max_linear, v_total * math.cos(desired_direction)))
-            twist.linear.x = max(0.0, min(self.v_max_linear, v_total))
-            twist.angular.z = max(min(self.k_ang * desired_direction, self.v_max_angular), -self.v_max_angular)
+            # for omnidirectional KELO Robile
+            # note that we do not allow negative velocities in x direction
+            # to not move backwards where the robot would lack sensor coverage
+            twist.linear.x = max(0.0, min(self.v_max_linear, vx_total_b))
+            twist.linear.y = max(-self.v_max_linear, min(self.v_max_linear, vy_total_b))
+            twist.angular.z = 0.0
+            # for a mobile robot that
+            # neither can generate sideways motion directly
+            # nor map it somehow internally to its capabilities
+            # twist.linear.x = max(0.0, min(self.v_max_linear, v_total))
+            # twist.angular.z = max(min(self.k_ang * desired_direction, self.v_max_angular), -self.v_max_angular)
 
             self.publisher.publish(twist)
 
