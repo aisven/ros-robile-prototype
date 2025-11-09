@@ -33,6 +33,7 @@ class PotentialFieldPlanner(LifecycleNode):
         # counters
         self.planning_counter = 0
         self.planning_near_goal_counter = 0
+        self.stuck_counter = 0
 
     def on_configure(self, state):
         self.get_logger().info('Configuring potential field planner...')
@@ -105,6 +106,7 @@ class PotentialFieldPlanner(LifecycleNode):
         # counters
         self.planning_counter = 0
         self.planning_near_goal_counter = 0
+        self.stuck_counter = 0
 
         return TransitionCallbackReturn.SUCCESS
 
@@ -164,7 +166,7 @@ class PotentialFieldPlanner(LifecycleNode):
             scan = self.latest_scan
 
         # scan freshness check
-        scan_time = self.latest_scan.header.stamp
+        scan_time = scan.header.stamp
         if self.get_clock().now() - Time.from_msg(scan_time) > Duration(seconds=1.0):
             self.get_logger().warning("Stale scan detected! Stopping robot for now to avoid potential accidents.")
             self.publisher.publish(Twist())
@@ -190,8 +192,8 @@ class PotentialFieldPlanner(LifecycleNode):
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
             return
 
-        # set current timestamp on goal to avoid extrapolation issues
-        self.goal_o.header.stamp = self.get_clock().now().to_msg()
+        # stamp goal with the scan time (same time used for tf requests) to avoid extrapolation
+        self.goal_o.header.stamp = scan.header.stamp
 
         # compute the coordinates of the goal
         # with respect to the current pose of the robot's base
@@ -219,7 +221,7 @@ class PotentialFieldPlanner(LifecycleNode):
             try:
                 # lookup tf from base_link to odom via buffer subscribed to /tf topic
                 # this we use to extract current orientation of the robot
-                tf_b_to_o = self.tf_buffer.lookup_transform('odom', 'base_link', rclpy.time.Time())
+                tf_b_to_o = self.tf_buffer.lookup_transform('odom', 'base_link', scan_time)
             except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
                 return
 
@@ -274,6 +276,19 @@ class PotentialFieldPlanner(LifecycleNode):
             if do_log:
                 self.get_logger().info(f"v_total={v_total:.2f}")
 
+            # attempt to avoid local minima
+            if v_total < 0.01 and dist_to_goal > self.approach_threshold:
+                self.stuck_counter += 1
+            else:
+                self.stuck_counter = 0
+            if self.stuck_counter > 20:
+                # when stuck rotate in place for a short burst
+                twist = Twist()
+                twist.angular.z = 0.8
+                self.publisher.publish(twist)
+                self.stuck_counter = 0
+                return
+
             if v_total < 1e-6:
                 desired_direction = 0.0
             else:
@@ -281,7 +296,7 @@ class PotentialFieldPlanner(LifecycleNode):
                 desired_direction = math.atan2(vy_total_b, vx_total_b) if v_total > 0 else 0.0
 
             twist = Twist()
-            twist.linear.x = min(v_total, self.v_max_linear) + 0.001
+            twist.linear.x = max(0.0, min(self.v_max_linear, v_total * math.cos(desired_direction)))
             if twist.linear.x < 0.0:
                 twist.linear.x = 0.0
             twist.angular.z = max(min(self.k_ang * desired_direction, self.v_max_angular), -self.v_max_angular)
