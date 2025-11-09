@@ -1,3 +1,5 @@
+import numpy as np
+
 import rclpy
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
@@ -264,20 +266,72 @@ class PotentialFieldPlanner(LifecycleNode):
             vx_a_b = self.k_a * (goal_x_b / dist_to_goal) if dist_to_goal > 1e-3 else 0.0
             vy_a_b = self.k_a * (goal_y_b / dist_to_goal) if dist_to_goal > 1e-3 else 0.0
 
-            vx_r_b = 0.0
-            vy_r_b = 0.0
-            scan_angle_rad = scan.angle_min
-            for obstacle_dist in scan.ranges:
-                if math.isfinite(obstacle_dist) and scan.range_min < obstacle_dist < scan.range_max:
-                    if obstacle_dist < self.rho_0:
-                        scalar = self.k_r * (1.0 / obstacle_dist - 1.0 / self.rho_0) / (obstacle_dist ** 2)
-                        cos_a = math.cos(scan_angle_rad)
-                        sin_a = math.sin(scan_angle_rad)
-                        vx_r_b += scalar * (-cos_a)
-                        vy_r_b += scalar * (-sin_a)
-                scan_angle_rad += scan.angle_increment
+            # convert scan to numpy arrays
+            ranges = np.array(scan.ranges)
+            angles = scan.angle_min + np.arange(len(ranges)) * scan.angle_increment
 
-            v_r = math.sqrt(vx_r_b**2 + vy_r_b**2)
+            # filter valid ranges
+            valid_mask = np.isfinite(ranges) & (ranges > scan.range_min) & (ranges < scan.range_max)
+            valid_ranges = ranges[valid_mask]
+            valid_angles = angles[valid_mask]
+
+            if len(valid_ranges) > 0:
+                # compute obstacle positions in scanner frame
+                obs_x_s = valid_ranges * np.cos(valid_angles)
+                obs_y_s = valid_ranges * np.sin(valid_angles)
+
+                # extract rotation and translation from tf_s_to_b
+                rot = tf_s_to_b.transform.rotation
+                trans = tf_s_to_b.transform.translation
+
+                # convert quaternion to rotation matrix (2d projection)
+                # for 2d case we only need yaw rotation
+                _, _, yaw = euler_from_quaternion([rot.x, rot.y, rot.z, rot.w])
+                cos_yaw = np.cos(yaw)
+                sin_yaw = np.sin(yaw)
+
+                # transform obstacles to base_link frame
+                obs_x_b = cos_yaw * obs_x_s - sin_yaw * obs_y_s + trans.x
+                obs_y_b = sin_yaw * obs_x_s + cos_yaw * obs_y_s + trans.y
+
+                # compute distances in base_link frame
+                obs_dist_b = np.sqrt(obs_x_b ** 2 + obs_y_b ** 2)
+
+                # avoid division by zero
+                valid_dist_mask = obs_dist_b > 1e-6
+                obs_x_b = obs_x_b[valid_dist_mask]
+                obs_y_b = obs_y_b[valid_dist_mask]
+                obs_dist_b = obs_dist_b[valid_dist_mask]
+                valid_ranges = valid_ranges[valid_dist_mask]
+
+                # filter based on transformed distance
+                repulsion_mask = obs_dist_b < self.rho_0
+                obs_x_b = obs_x_b[repulsion_mask]
+                obs_y_b = obs_y_b[repulsion_mask]
+                obs_dist_b_filtered = obs_dist_b[repulsion_mask]
+
+                if len(obs_dist_b_filtered) > 0:
+                    # use transformed distance for scalars
+                    # compute repulsive velocity contributions
+                    # scalar magnitude based on distance in scanner frame
+                    scalars = self.k_r * (1.0 / obs_dist_b_filtered - 1.0 / self.rho_0) / (obs_dist_b_filtered ** 2)
+
+                    # direction away from obstacles in base_link frame (normalized)
+                    dir_x_b = -obs_x_b / obs_dist_b_filtered
+                    dir_y_b = -obs_y_b / obs_dist_b_filtered
+
+                    # sum all repulsive contributions
+                    vx_r_b = np.sum(scalars * dir_x_b)
+                    vy_r_b = np.sum(scalars * dir_y_b)
+                else:
+                    vx_r_b = 0.0
+                    vy_r_b = 0.0
+            else:
+                vx_r_b = 0.0
+                vy_r_b = 0.0
+
+            # clamp total repulsive velocity magnitude
+            v_r = math.sqrt(vx_r_b ** 2 + vy_r_b ** 2)
             if v_r > self.v_r_max:
                 vx_r_b = (vx_r_b / v_r) * self.v_r_max
                 vy_r_b = (vy_r_b / v_r) * self.v_r_max
@@ -307,12 +361,11 @@ class PotentialFieldPlanner(LifecycleNode):
                 desired_direction = 0.0
             else:
                 # no need to normalize this angle due to definition of atan2
-                desired_direction = math.atan2(vy_total_b, vx_total_b) if v_total > 0 else 0.0
+                desired_direction = math.atan2(vy_total_b, vx_total_b)
 
             twist = Twist()
-            twist.linear.x = max(0.0, min(self.v_max_linear, v_total * math.cos(desired_direction)))
-            if twist.linear.x < 0.0:
-                twist.linear.x = 0.0
+            # twist.linear.x = max(0.0, min(self.v_max_linear, v_total * math.cos(desired_direction)))
+            twist.linear.x = max(0.0, min(self.v_max_linear, v_total))
             twist.angular.z = max(min(self.k_ang * desired_direction, self.v_max_angular), -self.v_max_angular)
 
             self.publisher.publish(twist)
