@@ -1,41 +1,41 @@
 import rclpy
-from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from rclpy.duration import Duration
 from geometry_msgs.msg import Twist, PointStamped, TransformStamped
+from rclpy.time import Time
 from sensor_msgs.msg import LaserScan
 import tf2_ros
 import tf2_geometry_msgs
 from tf_transformations import euler_from_quaternion
 import math
 import threading
-from rcl_interfaces.msg import ParameterDescriptor
+from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
+from rclpy.lifecycle import LifecycleNode, TransitionCallbackReturn
 
-
-class PotentialFieldPlanner(Node):
+class PotentialFieldPlanner(LifecycleNode):
     def __init__(self):
         super().__init__('potential_field_planner')
-        # best effort for consuming sensor data
-        qos_sub = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10,
-            durability=DurabilityPolicy.VOLATILE
-        )
-        # reliability for sending messages to cmd_vel
-        qos_pub = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10,
-            durability=DurabilityPolicy.VOLATILE
-        )
-        self.publisher = self.create_publisher(Twist, '/cmd_vel', qos_pub)
-        self.subscription = self.create_subscription(LaserScan, '/scan', self.scan_callback, qos_sub)
+        # static goal in odom
+        self.goal_o = None
+        self.goal_theta_o = None
+        self.goal_reached = False
+        self.latest_scan = None
+        self.lock = threading.Lock()
+        self.timer = None
+        # subscription to get scan messages
+        self.subscription = None
+        # publisher to send commands
+        self.publisher = None
+        # infrastructure to get information on transformations
+        self.tf_buffer = None
+        self.tf_listener = None
+        # counters
+        self.planning_counter = 0
+        self.planning_near_goal_counter = 0
 
-        self.tf_buffer = tf2_ros.Buffer()
-        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
-
+    def on_configure(self, state):
+        self.get_logger().info('Configuring potential field planner...')
         # declare parameters
         self.declare_parameter('k_a', 0.3, ParameterDescriptor(description='Attraction gain. Lower means less attraction. Higher means more aggressive attraction.'))
         self.declare_parameter('rho_0', 1.5, ParameterDescriptor(description='Repulsion threshold. Obstacles within range contribute to repulsion.'))
@@ -71,24 +71,80 @@ class PotentialFieldPlanner(Node):
 
         self.goal_reached = False
 
-        # thread-safe scan buffer
         self.latest_scan = None
-        self.lock = threading.Lock()
 
         # 10hz planning timer
         timer_period = 0.1
         self.timer = self.create_timer(timer_period, self.planning_callback)
+        self.get_logger().info('Potential field planner configured successfully.')
 
+        # subscription to get scan messages
+        # best effort for consuming sensor data
+        qos_sub = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+            durability=DurabilityPolicy.VOLATILE
+        )
+        self.subscription = self.create_subscription(LaserScan, '/scan', self.scan_callback, qos_sub)
+
+        # publisher to send commands
+        # reliability for sending messages to cmd_vel
+        qos_pub = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+            durability=DurabilityPolicy.VOLATILE
+        )
+        self.publisher = self.create_publisher(Twist, '/cmd_vel', qos_pub)
+
+        # infrastructure to get information on transformations
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+
+        # counters
         self.planning_counter = 0
         self.planning_near_goal_counter = 0
+
+        return TransitionCallbackReturn.SUCCESS
+
+    def on_activate(self, state):
+        self.get_logger().info('Activating potential field planner...')
+        self.timer.start()
+        return TransitionCallbackReturn.SUCCESS
+
+    def on_deactivate(self, state):
+        self.get_logger().info('Deactivating potential field planner...')
+        self.timer.cancel()
+        return TransitionCallbackReturn.SUCCESS
+
+    def on_shutdown(self, state):
+        self.get_logger().info('Shutting down potential field planner...')
+        if self.timer:
+            self.timer.cancel()
+        return TransitionCallbackReturn.SUCCESS
 
     def params_callback(self, params):
         for param in params:
             if param.name == 'k_a':
                 self.k_a = param.value
+            elif param.name == 'rho_0':
+                self.rho_0 = param.value
             elif param.name == 'k_r':
                 self.k_r = param.value
-        return rclpy.node.SetParametersResult(successful=True)
+            elif param.name == 'v_r_max':
+                self.v_r_max = param.value
+            elif param.name == 'k_ang':
+                self.k_ang = param.value
+            elif param.name == 'v_max_linear':
+                self.v_max_linear = param.value
+            elif param.name == 'v_max_angular':
+                self.v_max_angular = param.value
+            elif param.name == 'approach_threshold':
+                self.approach_threshold = param.value
+            elif param.name == 'ang_threshold':
+                self.ang_threshold = param.value
+        return SetParametersResult(successful=True)
 
     def scan_callback(self, msg):
         # lock for safe scan update
@@ -99,34 +155,38 @@ class PotentialFieldPlanner(Node):
         # access scan safely
         do_log = self.planning_counter % 10 == 0
         self.planning_counter += 1
+
+        # lock for safe scan access
         with self.lock:
             if self.latest_scan is None:
-                return
-            # freshness check
-            scan_time = self.latest_scan.header.stamp
-            current_time = self.get_clock().now()
-            if current_time - rclpy.time.Time.from_msg(scan_time) > Duration(seconds=1.0):
-                self.get_logger().warn("Stale scan detected! Stopping robot for now to avoid potential accidents.")
-                twist = Twist()
-                self.publisher.publish(twist)
                 return
             # reference to immutable object instead of cloning is okay
             scan = self.latest_scan
 
-        if self.goal_reached:
-            twist = Twist()
-            self.publisher.publish(twist)
+        # scan freshness check
+        scan_time = self.latest_scan.header.stamp
+        if self.get_clock().now() - Time.from_msg(scan_time) > Duration(seconds=1.0):
+            self.get_logger().warning("Stale scan detected! Stopping robot for now to avoid potential accidents.")
+            self.publisher.publish(Twist())
             return
 
-        # transform check
-        if not self.tf_buffer.can_transform('base_link', 'odom', rclpy.time.Time()):
-            self.get_logger().warn('Currently cannot transform from o to b!')
+        if self.goal_reached:
+            if do_log:
+                self.get_logger().info("Goal already reached.")
+            self.publisher.publish(Twist())
+            return
+
+        # check if transform available
+        # now = self.get_clock().now()
+        scan_time = Time.from_msg(scan.header.stamp)
+        if not self.tf_buffer.can_transform('base_link', 'odom', scan_time, timeout=Duration(seconds=1.0)):
+            self.get_logger().warning('Currently cannot transform from o to b yet!')
             return
 
         try:
             # lookup tf from odom to base_link via buffer subscribed to /tf topic
             # this provides transform to map goal from odom to base_link frame
-            tf_o_to_b = self.tf_buffer.lookup_transform('base_link', 'odom', rclpy.time.Time())
+            tf_o_to_b = self.tf_buffer.lookup_transform('base_link', 'odom', scan_time)
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
             return
 
@@ -193,7 +253,7 @@ class PotentialFieldPlanner(Node):
             vy_r_b = 0.0
             scan_angle_rad = scan.angle_min
             for obstacle_dist in scan.ranges:
-                if scan.range_min < obstacle_dist < scan.range_max:
+                if math.isfinite(obstacle_dist) and scan.range_min < obstacle_dist < scan.range_max:
                     if obstacle_dist < self.rho_0:
                         scalar = self.k_r * (1.0 / obstacle_dist - 1.0 / self.rho_0) / (obstacle_dist ** 2)
                         cos_a = math.cos(scan_angle_rad)
@@ -214,12 +274,12 @@ class PotentialFieldPlanner(Node):
             if do_log:
                 self.get_logger().info(f"v_total={v_total:.2f}")
 
+            # no need to normalize this angle due to definition of atan2
             desired_direction = math.atan2(vy_total_b, vx_total_b) if v_total > 0 else 0.0
 
             twist = Twist()
-            twist.linear.x = min(self.v_max_linear, v_total) * math.cos(desired_direction)
-            twist.angular.z = self.k_ang * desired_direction
-            twist.angular.z = max(min(twist.angular.z, self.v_max_angular), -self.v_max_angular)
+            twist.linear.x = min(self.v_max_linear, v_total) * math.cos(desired_direction) + 0.005
+            twist.angular.z = max(-self.v_max_angular, min(self.v_max_angular, self.k_ang * desired_direction))
 
             if twist.linear.x < 0:
                 twist.linear.x = 0.0
@@ -227,23 +287,33 @@ class PotentialFieldPlanner(Node):
             self.publisher.publish(twist)
 
     def normalize_angle(self, angle_rad):
-        while angle_rad > math.pi:
-            angle_rad -= 2 * math.pi
-        while angle_rad < -math.pi:
-            angle_rad += 2 * math.pi
-        return angle_rad
+        return math.atan2(math.sin(angle_rad), math.cos(angle_rad))
+        # while angle_rad > math.pi:
+        #     angle_rad -= 2 * math.pi
+        # while angle_rad < -math.pi:
+        #     angle_rad += 2 * math.pi
+        # return angle_rad
 
 def main(args=None):
+    print("Begin of main of potential field planner.")
     rclpy.init(args=args)
     node = PotentialFieldPlanner()
+    # configure and activate for basic lifecycle flow
+    node.configure()
+    node.activate()
     executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
     try:
+        print("Calling executor spin.")
         executor.spin()
+        print("The executor spin returned.")
     finally:
+        node.deactivate()
+        node.shutdown()
         executor.shutdown()
         node.destroy_node()
         rclpy.shutdown()
+        print("End of main of potential field planner.")
 
 if __name__ == '__main__':
     main()
