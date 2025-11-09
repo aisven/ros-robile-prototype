@@ -296,6 +296,7 @@ class PotentialFieldPlanner(LifecycleNode):
                 self.stuck_counter = 0
             if self.stuck_counter > 20:
                 # when stuck rotate in place for a short burst
+                self.get_logger().warning('Trying to escape local minimum!')
                 twist = Twist()
                 twist.angular.z = 0.8
                 self.publisher.publish(twist)
