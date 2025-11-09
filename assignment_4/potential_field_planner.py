@@ -30,6 +30,8 @@ class PotentialFieldPlanner(LifecycleNode):
         # infrastructure to get information on transformations
         self.tf_buffer = None
         self.tf_listener = None
+        self.tf_static_buffer = None
+        self.tf_static_listener = None
         # counters
         self.planning_counter = 0
         self.planning_near_goal_counter = 0
@@ -102,6 +104,8 @@ class PotentialFieldPlanner(LifecycleNode):
         # infrastructure to get information on transformations
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        self.tf_static_buffer = tf2_ros.Buffer()
+        self.tf_static_listener = tf2_ros.TransformListener(self.tf_static_buffer, self)
 
         # counters
         self.planning_counter = 0
@@ -190,9 +194,19 @@ class PotentialFieldPlanner(LifecycleNode):
             # this provides transform to map goal from odom to base_link frame
             tf_o_to_b = self.tf_buffer.lookup_transform('base_link', 'odom', scan_time)
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+            if do_log:
+                self.get_logger().warning('Failed to lookup tf_o_to_b!')
             return
 
-        # stamp goal with the scan time (same time used for tf requests) to avoid extrapolation
+        try:
+            # lookup tf from scanner to base_link via buffer subscribed to /tf_static topic
+            # this provides transform to map scans from scanner frame to base_link frame
+            tf_s_to_b = self.tf_static_buffer.lookup_transform('base_link', scan.header.frame_id, Time())
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+            if do_log:
+                self.get_logger().warning('Failed to lookup tf_s_to_b!')
+            return
+
         self.goal_o.header.stamp = scan.header.stamp
 
         # compute the coordinates of the goal
@@ -234,8 +248,7 @@ class PotentialFieldPlanner(LifecycleNode):
 
             twist = Twist()
             twist.linear.x = 0.0
-            twist.angular.z = self.k_ang * ang_error
-            twist.angular.z = max(min(twist.angular.z, self.v_max_angular), -self.v_max_angular)
+            twist.angular.z = max(min(self.k_ang * ang_error, self.v_max_angular), -self.v_max_angular)
             self.publisher.publish(twist)
 
             if abs(ang_error) < self.ang_threshold:
