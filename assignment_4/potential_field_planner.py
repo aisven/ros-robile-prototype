@@ -274,15 +274,17 @@ class PotentialFieldPlanner(LifecycleNode):
             if do_log:
                 self.get_logger().info(f"v_total={v_total:.2f}")
 
-            # no need to normalize this angle due to definition of atan2
-            desired_direction = math.atan2(vy_total_b, vx_total_b) if v_total > 0 else 0.0
+            if v_total < 1e-6:
+                desired_direction = 0.0
+            else:
+                # no need to normalize this angle due to definition of atan2
+                desired_direction = math.atan2(vy_total_b, vx_total_b) if v_total > 0 else 0.0
 
             twist = Twist()
-            twist.linear.x = min(self.v_max_linear, v_total) * math.cos(desired_direction) + 0.005
-            twist.angular.z = max(-self.v_max_angular, min(self.v_max_angular, self.k_ang * desired_direction))
-
-            if twist.linear.x < 0:
+            twist.linear.x = min(v_total, self.v_max_linear) + 0.001
+            if twist.linear.x < 0.0:
                 twist.linear.x = 0.0
+            twist.angular.z = max(min(self.k_ang * desired_direction, self.v_max_angular), -self.v_max_angular)
 
             self.publisher.publish(twist)
 
