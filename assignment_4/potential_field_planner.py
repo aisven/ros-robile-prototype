@@ -290,17 +290,17 @@ class PotentialFieldPlanner(LifecycleNode):
                 self.get_logger().info(f"v_total={v_total:.2f}")
 
             # attempt to avoid local minima
-            if v_total < 0.01 and dist_to_goal > self.approach_threshold:
+            if v_total < 0.005 and dist_to_goal > self.approach_threshold:
                 self.stuck_counter += 1
             else:
                 self.stuck_counter = 0
-            if self.stuck_counter > 20:
+            if self.stuck_counter > 50:
                 # when stuck rotate in place for a short burst
+                self.stuck_counter = 0
                 self.get_logger().warning('Trying to escape local minimum!')
                 twist = Twist()
-                twist.angular.z = 0.8
+                twist.angular.z = 0.7
                 self.publisher.publish(twist)
-                self.stuck_counter = 0
                 return
 
             if v_total < 1e-6:
