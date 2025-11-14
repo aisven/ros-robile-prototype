@@ -1,10 +1,10 @@
 import numpy as np
 
 import rclpy
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from rclpy.duration import Duration
-from geometry_msgs.msg import Twist, PointStamped, TransformStamped
+from geometry_msgs.msg import Twist, PointStamped
 from rclpy.time import Time
 from sensor_msgs.msg import LaserScan
 import tf2_ros
@@ -120,19 +120,33 @@ class PotentialFieldPlanner(LifecycleNode):
 
     def on_activate(self, state):
         self.get_logger().info('Activating potential field planner...')
-        self.timer.start()
-        return TransitionCallbackReturn.SUCCESS
+        try:
+            self.timer.reset()
+            self.get_logger().info('Timer started successfully.')
+            return TransitionCallbackReturn.SUCCESS
+        except Exception as e:
+            self.get_logger().error(f'Error during activation. {str(e)}')
+            return TransitionCallbackReturn.FAILURE
 
     def on_deactivate(self, state):
         self.get_logger().info('Deactivating potential field planner...')
-        self.timer.cancel()
-        return TransitionCallbackReturn.SUCCESS
+        try:
+            self.timer.cancel()
+            self.get_logger().info('Timer canceled successfully.')
+            return TransitionCallbackReturn.SUCCESS
+        except Exception as e:
+            self.get_logger().error(f'Error during deactivation. {str(e)}')
+            return TransitionCallbackReturn.FAILURE
 
     def on_shutdown(self, state):
         self.get_logger().info('Shutting down potential field planner...')
-        if self.timer:
-            self.timer.cancel()
-        return TransitionCallbackReturn.SUCCESS
+        try:
+            if self.timer is not None:
+                self.timer.destroy()
+            return TransitionCallbackReturn.SUCCESS
+        except Exception as e:
+            self.get_logger().error(f'Error during shutdown. {str(e)}')
+            return TransitionCallbackReturn.FAILURE
 
     def params_callback(self, params):
         for param in params:
@@ -169,14 +183,31 @@ class PotentialFieldPlanner(LifecycleNode):
         # lock for safe scan access
         with self.lock:
             if self.latest_scan is None:
+                if do_log:
+                    self.get_logger().debug('No scan data available yet.')
                 return
             # reference to immutable object instead of cloning is okay
             scan = self.latest_scan
 
         # scan freshness check
-        scan_time = scan.header.stamp
-        if self.get_clock().now() - Time.from_msg(scan_time) > Duration(seconds=1.0):
-            self.get_logger().warning("Stale scan detected! Stopping robot for now to avoid potential accidents.")
+        receipt_time = self.get_clock().now()
+        scan_time = Time.from_msg(scan.header.stamp)
+        if scan_time.nanoseconds < 1e12:  # < ~2001 epoch: flag invalid/old
+            if do_log:
+                self.get_logger().info('Invalid scan stamp; using receipt time.')
+            scan_time = receipt_time
+        now = self.get_clock().now()
+        age = (now - scan_time).nanoseconds / 1e9
+        scan_sec = scan_time.nanoseconds // int(1e9)
+        scan_nanosec = scan_time.nanoseconds % int(1e9)
+        now_sec = now.nanoseconds // int(1e9)
+        now_nanosec = now.nanoseconds % int(1e9)
+        if do_log:
+            self.get_logger().info(
+                f'Scan stamp: {scan_sec}.{scan_nanosec // 1e9}, now: {now_sec}.{now_nanosec // 1e9}, age: {age:.3f}s')
+        if now - scan_time > Duration(seconds=1.0):
+            if do_log:
+                self.get_logger().warning("Stale scan detected! Stopping robot for now to avoid potential accidents.")
             self.publisher.publish(Twist())
             return
 
@@ -187,10 +218,10 @@ class PotentialFieldPlanner(LifecycleNode):
             return
 
         # check if transform available
-        # now = self.get_clock().now()
         scan_time = Time.from_msg(scan.header.stamp)
-        if not self.tf_buffer.can_transform('base_link', 'odom', scan_time, timeout=Duration(seconds=1.0)):
-            self.get_logger().warning('Currently cannot transform from o to b yet!')
+        if not self.tf_buffer.can_transform('base_link', 'odom', scan_time, timeout=Duration(seconds=0.0)):
+            if do_log:
+                self.get_logger().warning('Currently cannot transform from o to b yet!')
             return
 
         try:
@@ -394,7 +425,7 @@ def main(args=None):
     lc_node = PotentialFieldPlanner()
 
     # create executor and add lifecycle node
-    executor = MultiThreadedExecutor(num_threads=4)
+    executor = SingleThreadedExecutor()
     executor.add_node(lc_node)
 
     # create a separate client node for service calls
