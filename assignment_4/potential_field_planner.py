@@ -138,11 +138,33 @@ class PotentialFieldPlanner(LifecycleNode):
             self.get_logger().error(f'Error during deactivation. {str(e)}')
             return TransitionCallbackReturn.FAILURE
 
+    def on_cleanup(self, state):
+        self.get_logger().info('Cleaning up potential field planner...')
+        try:
+            if self.timer is not None:
+                self.timer.destroy()
+            self.tf_buffer.clear()
+            self.tf_static_buffer.clear()
+            if self.subscription:
+                self.subscription.destroy()
+            if self.publisher:
+                self.publisher.destroy()
+            return TransitionCallbackReturn.SUCCESS
+        except Exception as e:
+            self.get_logger().error(f'Error during cleanup. {str(e)}')
+            return TransitionCallbackReturn.FAILURE
+
     def on_shutdown(self, state):
         self.get_logger().info('Shutting down potential field planner...')
         try:
             if self.timer is not None:
                 self.timer.destroy()
+            self.tf_buffer.clear()
+            self.tf_static_buffer.clear()
+            if self.subscription:
+                self.subscription.destroy()
+            if self.publisher:
+                self.publisher.destroy()
             return TransitionCallbackReturn.SUCCESS
         except Exception as e:
             self.get_logger().error(f'Error during shutdown. {str(e)}')
@@ -199,12 +221,12 @@ class PotentialFieldPlanner(LifecycleNode):
         now = self.get_clock().now()
         age = (now - scan_time).nanoseconds / 1e9
         scan_sec = scan_time.nanoseconds // int(1e9)
-        scan_nanosec = scan_time.nanoseconds % int(1e9)
         now_sec = now.nanoseconds // int(1e9)
-        now_nanosec = now.nanoseconds % int(1e9)
+        scan_ms = (scan_time.nanoseconds % int(1e9)) // int(1e6)
+        now_ms = (now.nanoseconds % int(1e9)) // int(1e6)
         if do_log:
             self.get_logger().info(
-                f'Scan stamp: {scan_sec}.{scan_nanosec // 1e9}, now: {now_sec}.{now_nanosec // 1e9}, age: {age:.3f}s')
+                f'Scan stamp: {scan_sec}.{scan_ms:03d}, now: {now_sec}.{now_ms:03d}, age: {age:.3f}s')
         if now - scan_time > Duration(seconds=1.0):
             if do_log:
                 self.get_logger().warning("Stale scan detected! Stopping robot for now to avoid potential accidents.")
@@ -218,7 +240,6 @@ class PotentialFieldPlanner(LifecycleNode):
             return
 
         # check if transform available
-        scan_time = Time.from_msg(scan.header.stamp)
         if not self.tf_buffer.can_transform('base_link', 'odom', scan_time, timeout=Duration(seconds=0.0)):
             if do_log:
                 self.get_logger().warning('Currently cannot transform from o to b yet!')
