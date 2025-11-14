@@ -14,6 +14,8 @@ import math
 import threading
 from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
 from rclpy.lifecycle import LifecycleNode, TransitionCallbackReturn
+from lifecycle_msgs.srv import ChangeState
+from lifecycle_msgs.msg import Transition
 
 class PotentialFieldPlanner(LifecycleNode):
     def __init__(self):
@@ -386,25 +388,75 @@ class PotentialFieldPlanner(LifecycleNode):
         # return angle_rad
 
 def main(args=None):
-    print("Begin of main of potential field planner.")
     rclpy.init(args=args)
-    node = PotentialFieldPlanner()
-    # configure and activate for basic lifecycle flow
-    node.configure()
-    node.activate()
+
+    # create the lifecycle node
+    lc_node = PotentialFieldPlanner()
+
+    # create executor and add lifecycle node
     executor = MultiThreadedExecutor(num_threads=4)
-    executor.add_node(node)
+    executor.add_node(lc_node)
+
+    # create a separate client node for service calls
+    client_node = rclpy.create_node('lifecycle_client')
+    executor.add_node(client_node)
+
+    # create service client for state changes
+    change_state_client = client_node.create_client(
+        ChangeState,
+        f'/{lc_node.get_name()}/change_state'
+    )
+
+    # wait for service to be available
+    if not change_state_client.wait_for_service(timeout_sec=5.0):
+        client_node.get_logger().error('Timeout. The change_state_client service not available!')
+        return
+
+    # function to call state transition
+    def call_transition(transition_id):
+        request = ChangeState.Request()
+        request.transition.id = transition_id
+        future = change_state_client.call_async(request)
+        rclpy.spin_until_future_complete(client_node, future, executor=executor, timeout_sec=5.0)
+        if future.result() is not None:
+            return future.result().success
+        return False
+
+    # configure
+    if call_transition(Transition.TRANSITION_CONFIGURE):
+        client_node.get_logger().info('Node configured.')
+    else:
+        client_node.get_logger().error('Node failed to configure!')
+        return
+
+    # activate
+    if call_transition(Transition.TRANSITION_ACTIVATE):
+        client_node.get_logger().info('Node activated.')
+    else:
+        client_node.get_logger().error('Node failed to activate!')
+        return
+
     try:
-        print("Calling executor spin.")
         executor.spin()
-        print("The executor spin returned.")
     finally:
-        node.deactivate()
-        node.shutdown()
+        # deactivate
+        if call_transition(Transition.TRANSITION_DEACTIVATE):
+            client_node.get_logger().info('Node deactivated.')
+        else:
+            client_node.get_logger().error('Node failed to deactivate!')
+            return
+
+        # cleanup
+        if call_transition(Transition.TRANSITION_CLEANUP):
+            client_node.get_logger().info('Node cleaned up.')
+        else:
+            client_node.get_logger().error('Node failed to cleanup!')
+            return
+
         executor.shutdown()
-        node.destroy_node()
+        lc_node.destroy_node()
+        client_node.destroy_node()
         rclpy.shutdown()
-        print("End of main of potential field planner.")
 
 if __name__ == '__main__':
     main()
