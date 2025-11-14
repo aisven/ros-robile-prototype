@@ -141,14 +141,7 @@ class PotentialFieldPlanner(LifecycleNode):
     def on_cleanup(self, state):
         self.get_logger().info('Cleaning up potential field planner...')
         try:
-            if self.timer is not None:
-                self.timer.destroy()
-            self.tf_buffer.clear()
-            self.tf_static_buffer.clear()
-            if self.subscription:
-                self.subscription.destroy()
-            if self.publisher:
-                self.publisher.destroy()
+            self._cleanup_resources()
             return TransitionCallbackReturn.SUCCESS
         except Exception as e:
             self.get_logger().error(f'Error during cleanup. {str(e)}')
@@ -157,18 +150,24 @@ class PotentialFieldPlanner(LifecycleNode):
     def on_shutdown(self, state):
         self.get_logger().info('Shutting down potential field planner...')
         try:
-            if self.timer is not None:
-                self.timer.destroy()
-            self.tf_buffer.clear()
-            self.tf_static_buffer.clear()
-            if self.subscription:
-                self.subscription.destroy()
-            if self.publisher:
-                self.publisher.destroy()
+            self._cleanup_resources()
             return TransitionCallbackReturn.SUCCESS
         except Exception as e:
             self.get_logger().error(f'Error during shutdown. {str(e)}')
             return TransitionCallbackReturn.FAILURE
+
+    def _cleanup_resources(self):
+        if self.timer is not None:
+            self.timer.destroy()
+            self.timer = None
+        self.tf_buffer.clear()
+        self.tf_static_buffer.clear()
+        if self.subscription is not None:
+            self.subscription.destroy()
+            self.subscription = None
+        if self.publisher is not None:
+            self.publisher.destroy()
+            self.publisher = None
 
     def params_callback(self, params):
         for param in params:
@@ -221,8 +220,8 @@ class PotentialFieldPlanner(LifecycleNode):
         now = self.get_clock().now()
         age = (now - scan_time).nanoseconds / 1e9
         scan_sec = scan_time.nanoseconds // int(1e9)
-        now_sec = now.nanoseconds // int(1e9)
         scan_ms = (scan_time.nanoseconds % int(1e9)) // int(1e6)
+        now_sec = now.nanoseconds // int(1e9)
         now_ms = (now.nanoseconds % int(1e9)) // int(1e6)
         if do_log:
             self.get_logger().info(
