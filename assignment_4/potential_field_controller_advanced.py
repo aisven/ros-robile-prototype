@@ -4,8 +4,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.duration import Duration
 from rclpy.time import Time
-from rclpy.parameter import ParameterDescriptor
-from rcl_interfaces.msg import ParameterDescriptor as ParamDesc
+from rcl_interfaces.msg import ParameterDescriptor
 from geometry_msgs.msg import Twist, PoseStamped
 from sensor_msgs.msg import LaserScan
 from tf2_ros import Buffer, TransformListener, TransformException
@@ -21,20 +20,20 @@ class PotentialFieldController(Node):
         super().__init__('potential_field_controller')
 
         # declare tunable parameters
-        self.declare_parameter('k_a', 0.6, ParamDesc(description='attraction gain'))
-        self.declare_parameter('k_r', 0.8, ParamDesc(description='repulsion gain'))
-        self.declare_parameter('rho_0', 1.5, ParamDesc(description='repulsion threshold (m)'))
-        self.declare_parameter('v_r_max', 1.0, ParamDesc(description='max repulsive velocity (m/s)'))
-        self.declare_parameter('v_max_linear', 0.6, ParamDesc(description='max linear speed (m/s)'))
-        self.declare_parameter('v_max_angular', 1.2, ParamDesc(description='max angular speed (rad/s)'))
-        self.declare_parameter('k_ang', 1.2, ParamDesc(description='angular gain when orienting at goal'))
-        self.declare_parameter('approach_threshold', 0.25, ParamDesc(description='distance to start orientation control (m)'))
-        self.declare_parameter('ang_threshold', 0.08, ParamDesc(description='angular threshold to consider orientation reached (rad)'))
-        self.declare_parameter('pos_tolerance', 0.15, ParamDesc(description='position tolerance to consider goal reached (m)'))
-        self.declare_parameter('avoid_backwards', True, ParamDesc(description='do not command negative linear.x (avoid moving backwards)'))
+        self.declare_parameter('k_a', 0.6, ParameterDescriptor(description='attraction gain'))
+        self.declare_parameter('k_r', 0.8, ParameterDescriptor(description='repulsion gain'))
+        self.declare_parameter('rho_0', 1.5, ParameterDescriptor(description='repulsion threshold (m)'))
+        self.declare_parameter('v_r_max', 1.0, ParameterDescriptor(description='max repulsive velocity (m/s)'))
+        self.declare_parameter('v_max_linear', 0.6, ParameterDescriptor(description='max linear speed (m/s)'))
+        self.declare_parameter('v_max_angular', 1.2, ParameterDescriptor(description='max angular speed (rad/s)'))
+        self.declare_parameter('k_ang', 1.2, ParameterDescriptor(description='angular gain when orienting at goal'))
+        self.declare_parameter('approach_threshold', 0.25, ParameterDescriptor(description='distance to start orientation control (m)'))
+        self.declare_parameter('ang_threshold', 0.08, ParameterDescriptor(description='angular threshold to consider orientation reached (rad)'))
+        self.declare_parameter('pos_tolerance', 0.15, ParameterDescriptor(description='position tolerance to consider goal reached (m)'))
+        self.declare_parameter('avoid_backwards', True, ParameterDescriptor(description='do not command negative linear.x (avoid moving backwards)'))
 
         # declare use_sim_time for explicit check
-        self.declare_parameter('use_sim_time', False, ParamDesc(description='use sim clock (/clock) vs system time'))
+        self.declare_parameter('use_sim_time', False, ParameterDescriptor(description='use sim clock (/clock) vs system time'))
         use_sim = self.get_parameter('use_sim_time').value
         self.get_logger().info(f'Using sim time: {use_sim}')
         if use_sim and self.get_clock().clock_type.name != 'ROS_CLOCK_SIM_TIME':
@@ -124,12 +123,11 @@ class PotentialFieldController(Node):
 
     def compute_attractive_b(self, goal_pos_b):
         # compute attractive velocity in base_link frame: k_a * unit vector towards goal from robot (0,0)
-        dx_b, dy_b = goal_pos_b[0], goal_pos_b[1]
-        dist = math.hypot(dx_b, dy_b)
+        dist = np.linalg.norm(goal_pos_b)
         if dist == 0.0:
             return np.zeros(2)
         # direction scaled by gain (constant speed towards goal)
-        return self.k_a * np.array([dx_b, dy_b]) / dist
+        return self.k_a * goal_pos_b / dist
 
     def compute_repulsive_b(self):
         # compute summed repulsive velocities in base_link frame from laser points (batched/vectorized)
@@ -280,7 +278,8 @@ class PotentialFieldController(Node):
         vx_b, vy_b = total_v_b[0], total_v_b[1]
 
         # compute steering angle from total velocity
-        if math.hypot(vx_b, vy_b) > 0.01:  # avoid div0
+        vel_norm = np.linalg.norm(total_v_b)
+        if vel_norm > 0.01:  # avoid div0
             alpha_b = math.atan2(vy_b, vx_b)
         else:
             alpha_b = 0.0
