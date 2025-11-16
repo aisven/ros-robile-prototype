@@ -5,6 +5,7 @@ from rclpy.node import Node
 from rclpy.duration import Duration
 from rclpy.time import Time
 from rclpy.parameter import ParameterDescriptor
+from rcl_interfaces.msg import ParameterDescriptor as ParamDesc
 from geometry_msgs.msg import Twist, PoseStamped
 from sensor_msgs.msg import LaserScan
 from tf2_ros import Buffer, TransformListener, TransformException
@@ -20,17 +21,24 @@ class PotentialFieldController(Node):
         super().__init__('potential_field_controller')
 
         # declare tunable parameters
-        self.declare_parameter('k_a', 0.6, ParameterDescriptor(description='attraction gain'))
-        self.declare_parameter('k_r', 0.8, ParameterDescriptor(description='repulsion gain'))
-        self.declare_parameter('rho_0', 1.5, ParameterDescriptor(description='repulsion threshold (m)'))
-        self.declare_parameter('v_r_max', 1.0, ParameterDescriptor(description='max repulsive velocity (m/s)'))
-        self.declare_parameter('v_max_linear', 0.6, ParameterDescriptor(description='max linear speed (m/s)'))
-        self.declare_parameter('v_max_angular', 1.2, ParameterDescriptor(description='max angular speed (rad/s)'))
-        self.declare_parameter('k_ang', 1.2, ParameterDescriptor(description='angular gain when orienting at goal'))
-        self.declare_parameter('approach_threshold', 0.25, ParameterDescriptor(description='distance to start orientation control (m)'))
-        self.declare_parameter('ang_threshold', 0.08, ParameterDescriptor(description='angular threshold to consider orientation reached (rad)'))
-        self.declare_parameter('pos_tolerance', 0.15, ParameterDescriptor(description='position tolerance to consider goal reached (m)'))
-        self.declare_parameter('avoid_backwards', True, ParameterDescriptor(description='do not command negative linear.x (avoid moving backwards)'))
+        self.declare_parameter('k_a', 0.6, ParamDesc(description='attraction gain'))
+        self.declare_parameter('k_r', 0.8, ParamDesc(description='repulsion gain'))
+        self.declare_parameter('rho_0', 1.5, ParamDesc(description='repulsion threshold (m)'))
+        self.declare_parameter('v_r_max', 1.0, ParamDesc(description='max repulsive velocity (m/s)'))
+        self.declare_parameter('v_max_linear', 0.6, ParamDesc(description='max linear speed (m/s)'))
+        self.declare_parameter('v_max_angular', 1.2, ParamDesc(description='max angular speed (rad/s)'))
+        self.declare_parameter('k_ang', 1.2, ParamDesc(description='angular gain when orienting at goal'))
+        self.declare_parameter('approach_threshold', 0.25, ParamDesc(description='distance to start orientation control (m)'))
+        self.declare_parameter('ang_threshold', 0.08, ParamDesc(description='angular threshold to consider orientation reached (rad)'))
+        self.declare_parameter('pos_tolerance', 0.15, ParamDesc(description='position tolerance to consider goal reached (m)'))
+        self.declare_parameter('avoid_backwards', True, ParamDesc(description='do not command negative linear.x (avoid moving backwards)'))
+
+        # declare use_sim_time for explicit check
+        self.declare_parameter('use_sim_time', False, ParamDesc(description='use sim clock (/clock) vs system time'))
+        use_sim = self.get_parameter('use_sim_time').value
+        self.get_logger().info(f'Using sim time: {use_sim}')
+        if use_sim and self.get_clock().clock_type.name != 'ROS_CLOCK_SIM_TIME':
+            self.get_logger().warn('use_sim_time=True but clock not sim-based; check launch')
 
         # get parameter values
         self.k_a = self.get_parameter('k_a').value
@@ -76,7 +84,7 @@ class PotentialFieldController(Node):
         self.control_timer = self.create_timer(0.1, self.control_loop)
 
         # one-shot timer for initial logging after tf populates
-        self.initial_log_timer = self.create_timer(3.0, self.log_initial_info, oneshot=True)
+        self.initial_log_timer = self.create_timer(3.0, self.log_initial_info)
 
     def laser_callback(self, msg):
         # store latest scan data and its frame_id (preserve original timestamp)
@@ -84,6 +92,9 @@ class PotentialFieldController(Node):
         self.laser_frame = msg.header.frame_id
 
     def log_initial_info(self):
+        # cancel this timer after first call
+        self.initial_log_timer.destroy()
+
         # get available frames from tf buffer
         try:
             frames_str = self.tf_buffer.all_frames_as_string()
@@ -92,10 +103,14 @@ class PotentialFieldController(Node):
             frames = [f"error: {e}"]
             self.get_logger().warn(f"tf frames error: {e}")
 
-        # get all topic names and filter to relevant navigation ones
-        topics = self.get_topic_names_and_namespaces()
-        relevant_keys = ['scan', 'odom', 'cmd_vel', 'tf', 'tf_static']
-        relevant_topics = [t[0] for t in topics if any(key in t[0] for key in relevant_keys)]
+        # get topic names and types, filter to relevant navigation ones
+        try:
+            topics = self.get_topic_names_and_types()
+            relevant_keys = ['scan', 'odom', 'cmd_vel', 'tf', 'tf_static']
+            relevant_topics = [name for name, _ in topics if any(key in name for key in relevant_keys)]
+        except Exception as e:
+            relevant_topics = [f"error: {e}"]
+            self.get_logger().warn(f"topics error: {e}")
 
         # compile param string
         params_str = (f"k_a={self.k_a}, k_r={self.k_r}, rho_0={self.rho_0}, v_r_max={self.v_r_max}, "
