@@ -41,7 +41,7 @@ class PotentialFieldController(Node):
         self.declare_parameter("ang_tolerance", 0.05, ParameterDescriptor(description="angular tolerance to consider orientation reached (rad)"))
         self.declare_parameter("avoid_backwards", True, ParameterDescriptor(description="do not command negative linear.x (avoid moving backwards)"))
         self.declare_parameter("tf_buffer_cache_duration", 0.25, ParameterDescriptor(description="duration in seconds for a transformation to be cached"))
-        self.declare_parameter("tf_lookup_timeout", 0.001, ParameterDescriptor(description="timeout in seconds for a transformation lookup"))
+        self.declare_parameter("tf_lookup_timeout", 0.05, ParameterDescriptor(description="timeout in seconds for a transformation lookup"))
         self.declare_parameter("controller_timer_period", 0.75, ParameterDescriptor(description="controller timer period in seconds"))
 
         # get parameter values
@@ -242,7 +242,9 @@ class PotentialFieldController(Node):
 
         # update goal stamp to current time for latest transform
         # note that if our goal was dynamic we should update all of its pose here
-        self.goal_pose_o.header.stamp = self.get_clock().now().to_msg()
+        self.goal_pose_o.header.stamp = rclpy.time.Time().to_msg()
+        # using now here does not work as it leads to time extrapolation issue
+        # self.goal_pose_o.header.stamp = self.get_clock().now().to_msg()
         goal_time = Time.from_msg(self.goal_pose_o.header.stamp)
 
         # check if transform from base to odom is available
