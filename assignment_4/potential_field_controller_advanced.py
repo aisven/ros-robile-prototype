@@ -10,6 +10,9 @@ from sensor_msgs.msg import LaserScan
 from tf2_ros import Buffer, TransformListener, TransformException
 from tf_transformations import euler_from_quaternion, quaternion_from_euler, quaternion_matrix
 
+# code format follows black default with max line length 160
+# black --line-length 160
+
 # goal pose in odom frame (assignment)
 GOAL_X_O = 4.0  # x in odom (m)
 GOAL_Y_O = 10.0  # y in odom (m)
