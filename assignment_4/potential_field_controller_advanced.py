@@ -50,12 +50,6 @@ class PotentialFieldController(Node):
         self.pos_tolerance = self.get_parameter('pos_tolerance').value
         self.avoid_backwards = self.get_parameter('avoid_backwards').value
 
-        # check use_sim_time
-        use_sim_time = self.get_parameter('use_sim_time').value
-        self.get_logger().info(f'Using sim time: {use_sim_time}')
-        if use_sim_time and self.get_clock().clock_type.name != 'ROS_CLOCK_SIM_TIME':
-            self.get_logger().warn('use_sim_time=True but clock not sim-based; check launch')
-
         # goal pose in odom frame
         quat_o = quaternion_from_euler(0.0, 0.0, GOAL_THETA_O)
         self.goal_pose_o = PoseStamped()
@@ -92,12 +86,10 @@ class PotentialFieldController(Node):
         self.initial_log_statement_written = False
         self.initial_log_statement_timer = self.create_timer(3.0, self.log_initial_info)
 
-
     def laser_callback(self, msg):
         # store latest scan data and its frame_id (preserve original timestamp)
         self.laser_data = msg
         self.laser_frame = msg.header.frame_id
-
 
     def log_initial_info(self):
         # only log once
@@ -127,15 +119,20 @@ class PotentialFieldController(Node):
             self.get_logger().warn(f"Ignoring error during checking topics. {e}")
 
         # compile param string
+        use_sim_time = self.get_parameter('use_sim_time').value
+
         params_str = (f"k_a={self.k_a}, k_r={self.k_r}, rho_0={self.rho_0}, v_r_max={self.v_r_max}, "
                       f"v_max_linear={self.v_max_linear}, v_max_angular={self.v_max_angular}, "
                       f"k_ang={self.k_ang}, approach_threshold={self.approach_threshold}, "
                       f"ang_threshold={self.ang_threshold}, pos_tolerance={self.pos_tolerance}, "
-                      f"avoid_backwards={self.avoid_backwards}")
+                      f"avoid_backwards={self.avoid_backwards}, use_sim_time={use_sim_time}")
+
+        # check use_sim_time
+        if use_sim_time and self.get_clock().clock_type.name != 'ROS_CLOCK_SIM_TIME':
+            self.get_logger().warn('use_sim_time=True but clock not sim-based! Check launch.')
 
         # log compiled info at info level
         self.get_logger().info(f"Node initialized.\nFrames: {relevant_frames}\nTopics: {relevant_topics}\nParameters: {params_str}")
-
 
     def compute_attractive_b(self, goal_pos_b):
         # compute attractive velocity in base frame
@@ -152,11 +149,10 @@ class PotentialFieldController(Node):
         # direction scaled by gain (constant speed towards goal)
         return self.k_a * direction_robot_to_goal
 
-
     def compute_repulsive_b(self):
         # compute summed repulsive velocities in base_link frame from laser points (batched/vectorized)
         if self.laser_data is None or self.laser_frame is None:
-            self.get_logger().debug(f"Information from LiDAR scan missing. self.laser_data={self.laser_data} self.laser_frame={self.laser_frame}")
+            self.get_logger().debug(f"Information from LiDAR scan missing. type(self.laser_data).__name__={type(self.laser_data).__name__} laser_frame={self.laser_frame}")
             return np.zeros(2)
 
         # check if transform from scanner to base is available
@@ -226,7 +222,6 @@ class PotentialFieldController(Node):
             rep_total_b = (rep_total_b / rep_norm) * self.v_r_max
 
         return rep_total_b
-
 
     def control_loop(self):
         if self.goal_reached:
