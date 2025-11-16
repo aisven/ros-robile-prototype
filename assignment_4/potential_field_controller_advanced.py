@@ -39,7 +39,6 @@ class PotentialFieldController(Node):
         self.declare_parameter("ang_threshold", 0.08, ParameterDescriptor(description="angular threshold to consider orientation reached (rad)"))
         self.declare_parameter("pos_tolerance", 0.15, ParameterDescriptor(description="position tolerance to consider goal reached (m)"))
         self.declare_parameter("avoid_backwards", True, ParameterDescriptor(description="do not command negative linear.x (avoid moving backwards)"))
-        self.declare_parameter("use_sim_time", True, ParameterDescriptor(description="use sim clock (/clock) vs system time"))
 
         # get parameter values
         self.k_a = self.get_parameter("k_a").value
@@ -158,16 +157,14 @@ class PotentialFieldController(Node):
     def compute_repulsive_b(self):
         # compute summed repulsive velocities in base_link frame from laser points (batched/vectorized)
         if self.laser_data is None or self.laser_frame is None:
-            self.get_logger().debug(
-                f"Information from LiDAR scan missing. type(self.laser_data).__name__={type(self.laser_data).__name__} laser_frame={self.laser_frame}"
-            )
+            self.get_logger().warning("No scan data. Returning zero repulsive force.")
             return np.zeros(2)
 
         # check if transform from scanner to base is available
         scan_time = Time.from_msg(self.laser_data.header.stamp)
         timeout = Duration(seconds=0.1)
         if not self.tf_buffer.can_transform("base_link", self.laser_frame, scan_time, timeout):
-            self.get_logger().debug("tf_s_to_b unavailable")
+            self.get_logger().warning("tf_s_to_b unavailable")
             return np.zeros(2)
 
         # lookup transform from scanner to base
@@ -177,7 +174,7 @@ class PotentialFieldController(Node):
             quat = [tf_s_to_b.transform.rotation.x, tf_s_to_b.transform.rotation.y, tf_s_to_b.transform.rotation.z, tf_s_to_b.transform.rotation.w]
             R = quaternion_matrix(quat)[:3, :3]  # rotation matrix (source to target)
         except TransformException as e:
-            self.get_logger().debug(f"Failed to get rotation matrix from laser frame to base frame. {e}")
+            self.get_logger().warning(f"Failed to get rotation matrix from laser frame to base frame. {e}")
             return np.zeros(2)
 
         # prepare angles and ranges as numpy arrays
@@ -243,7 +240,7 @@ class PotentialFieldController(Node):
         latest_time = Time()
         timeout = Duration(seconds=0.5)
         if not self.tf_buffer.can_transform("odom", "base_link", latest_time, timeout):
-            self.get_logger().warn("tf_b_to_o unavailable.")
+            self.get_logger().warning("tf_b_to_o unavailable.")
             return
 
         # extract current_yaw_o from tf_b_to_o
@@ -254,12 +251,12 @@ class PotentialFieldController(Node):
             # rotation from odom to base_link; euler gives yaw of base w.r.t odom
             _, _, current_yaw_o = euler_from_quaternion(quat_o)
         except TransformException as e:
-            self.get_logger().warn(f"Failed to extract current_yaw_o from tf_b_to_o. {e}")
+            self.get_logger().warning(f"Failed to extract current_yaw_o from tf_b_to_o. {e}")
             return
 
         # check if transform from odom to base is available
         if not self.tf_buffer.can_transform("base_link", "odom", goal_time, timeout):
-            self.get_logger().warn("tf_o_to_b unavailable.")
+            self.get_logger().warning("tf_o_to_b unavailable.")
             return
 
         # transform goal pose to base frame
@@ -270,7 +267,7 @@ class PotentialFieldController(Node):
             goal_position_b = np.array([goal_position_b_x, goal_position_b_y])
             distance_robot_to_goal_b = np.linalg.norm(goal_position_b)
         except TransformException as e:
-            self.get_logger().warn(f"Failed to transform goal pose to base frame with tf_o_to_b. {e}")
+            self.get_logger().warning(f"Failed to transform goal pose to base frame with tf_o_to_b. {e}")
             return
 
         # check if position reached
