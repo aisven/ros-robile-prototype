@@ -190,8 +190,14 @@ class PotentialFieldController(Node):
         angles = np.arange(n_rays) * self.laser_data.angle_increment + self.laser_data.angle_min
         ranges_np = np.array(self.laser_data.ranges)
 
-        # mask for valid rays (within rho_0 and above min range)
-        valid_mask = (ranges_np < self.rho_0) & (ranges_np > self.laser_data.range_min)
+        # mask for valid rays (finite ranges, within rho_0, and sensor limits)
+        valid_mask = (
+                np.isfinite(ranges_np)
+                & (ranges_np < self.rho_0)
+                & (ranges_np > self.laser_data.range_min)
+                & (ranges_np < self.laser_data.range_max)
+        )
+
         if not np.any(valid_mask):
             return np.zeros(2)
 
@@ -300,7 +306,7 @@ class PotentialFieldController(Node):
                 # orient in place to absolute goal theta
                 v_command = Twist()
                 v_command.linear.x = 0.0
-                v_command.angular.z = np.clip(self.k_ang * delta_yaw_o, -self.v_max_angular, self.v_max_angular)
+                v_command.angular.z = np.clip(0.9 * delta_yaw_o, -self.v_max_angular, self.v_max_angular)
                 self.v_command_publisher.publish(v_command)
                 return
 
@@ -334,8 +340,6 @@ class PotentialFieldController(Node):
 
         # linear forward (clip, avoid backwards if set)
         v_linear_x_b = v_total_x_b
-        if self.avoid_backwards:
-            v_linear_x_b = max(v_linear_x_b, 0.0)
         v_linear_x_b = np.clip(v_linear_x_b, 0.0 if self.avoid_backwards else -self.v_max_linear, self.v_max_linear)
 
         # publish twist
