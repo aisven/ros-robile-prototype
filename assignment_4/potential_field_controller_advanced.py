@@ -82,12 +82,12 @@ class PotentialFieldController(Node):
         self.laser_data = None
         self.laser_frame = None
 
-        # control timer (5 hz)
-        self.control_timer = self.create_timer(0.2, self.control_loop)
+        # control timer (2 hz)
+        self.control_timer = self.create_timer(0.5, self.control_loop)
 
         # one-shot timer for initial logging after tf populates
         self.initial_log_statement_written = False
-        self.initial_log_statement_timer = self.create_timer(3.0, self.log_initial_info)
+        self.initial_log_statement_timer = self.create_timer(5.0, self.log_initial_info)
 
     def laser_callback(self, msg):
         # store latest scan data and its frame_id (preserve original timestamp)
@@ -163,14 +163,13 @@ class PotentialFieldController(Node):
 
         # check if transform from scanner to base is available
         scan_time = Time.from_msg(self.laser_data.header.stamp)
-        timeout = Duration(seconds=0.1)
-        if not self.tf_buffer.can_transform("base_link", self.laser_frame, scan_time, timeout):
+        if not self.tf_buffer.can_transform("base_link", self.laser_frame, scan_time, Duration(seconds=0.1)):
             self.get_logger().warning("tf_s_to_b unavailable")
             return np.zeros(2)
 
         # lookup transform from scanner to base
         try:
-            tf_s_to_b = self.tf_buffer.lookup_transform("base_link", self.laser_frame, scan_time, timeout)
+            tf_s_to_b = self.tf_buffer.lookup_transform("base_link", self.laser_frame, scan_time, Duration(seconds=0.1))
             t = np.array([tf_s_to_b.transform.translation.x, tf_s_to_b.transform.translation.y, tf_s_to_b.transform.translation.z])
             quat = [tf_s_to_b.transform.rotation.x, tf_s_to_b.transform.rotation.y, tf_s_to_b.transform.rotation.z, tf_s_to_b.transform.rotation.w]
             R = quaternion_matrix(quat)[:3, :3]  # rotation matrix (source to target)
@@ -239,14 +238,13 @@ class PotentialFieldController(Node):
 
         # check if transform from base to odom is available
         latest_time = Time()
-        timeout = Duration(seconds=0.5)
-        if not self.tf_buffer.can_transform("odom", "base_link", latest_time, timeout):
+        if not self.tf_buffer.can_transform("odom", "base_link", latest_time, Duration(seconds=0.1)):
             self.get_logger().warning("tf_b_to_o unavailable.")
             return
 
         # extract current_yaw_o from tf_b_to_o
         try:
-            tf_b_to_o = self.tf_buffer.lookup_transform("odom", "base_link", latest_time, timeout)
+            tf_b_to_o = self.tf_buffer.lookup_transform("odom", "base_link", latest_time, Duration(seconds=0.1))
             # extract current yaw_o from transform rotation
             quat_o = [tf_b_to_o.transform.rotation.x, tf_b_to_o.transform.rotation.y, tf_b_to_o.transform.rotation.z, tf_b_to_o.transform.rotation.w]
             # rotation from odom to base_link; euler gives yaw of base w.r.t odom
@@ -256,13 +254,13 @@ class PotentialFieldController(Node):
             return
 
         # check if transform from odom to base is available
-        if not self.tf_buffer.can_transform("base_link", "odom", goal_time, timeout):
+        if not self.tf_buffer.can_transform("base_link", "odom", goal_time, Duration(seconds=0.1)):
             self.get_logger().warning("tf_o_to_b unavailable.")
             return
 
         # transform goal pose to base frame
         try:
-            goal_pose_b = self.tf_buffer.transform(self.goal_pose_o, "base_link", timeout=Duration(seconds=0.1))
+            goal_pose_b = self.tf_buffer.transform(self.goal_pose_o, "base_link", Duration(seconds=0.1))
             goal_position_b_x = goal_pose_b.pose.position.x
             goal_position_b_y = goal_pose_b.pose.position.y
             goal_position_b = np.array([goal_position_b_x, goal_position_b_y])
