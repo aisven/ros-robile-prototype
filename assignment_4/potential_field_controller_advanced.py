@@ -32,13 +32,6 @@ class PotentialFieldController(Node):
         self.declare_parameter('pos_tolerance', 0.15, ParameterDescriptor(description='position tolerance to consider goal reached (m)'))
         self.declare_parameter('avoid_backwards', True, ParameterDescriptor(description='do not command negative linear.x (avoid moving backwards)'))
 
-        # declare use_sim_time for explicit check
-        self.declare_parameter('use_sim_time', False, ParameterDescriptor(description='use sim clock (/clock) vs system time'))
-        use_sim = self.get_parameter('use_sim_time').value
-        self.get_logger().info(f'Using sim time: {use_sim}')
-        if use_sim and self.get_clock().clock_type.name != 'ROS_CLOCK_SIM_TIME':
-            self.get_logger().warn('use_sim_time=True but clock not sim-based; check launch')
-
         # get parameter values
         self.k_a = self.get_parameter('k_a').value
         self.k_r = self.get_parameter('k_r').value
@@ -51,6 +44,12 @@ class PotentialFieldController(Node):
         self.ang_threshold = self.get_parameter('ang_threshold').value
         self.pos_tolerance = self.get_parameter('pos_tolerance').value
         self.avoid_backwards = self.get_parameter('avoid_backwards').value
+
+        # check use_sim_time
+        use_sim_time = self.get_parameter('use_sim_time').value
+        self.get_logger().info(f'Using sim time: {use_sim_time}')
+        if use_sim_time and self.get_clock().clock_type.name != 'ROS_CLOCK_SIM_TIME':
+            self.get_logger().warn('use_sim_time=True but clock not sim-based; check launch')
 
         # goal pose in odom frame
         quat_o = quaternion_from_euler(0.0, 0.0, GOAL_THETA_O)
