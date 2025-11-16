@@ -133,8 +133,9 @@ class PotentialFieldController(Node):
         )
 
         # check use_sim_time
-        if use_sim_time and self.get_clock().clock_type.name != "ROS_CLOCK_SIM_TIME":
-            self.get_logger().warn("use_sim_time=True but clock not sim-based! Check launch.")
+        clock_type_name = self.get_clock().clock_type.name
+        if use_sim_time and clock_type_name != "ROS_CLOCK_SIM_TIME":
+            self.get_logger().warn(f"use_sim_time=True but clock not sim-based! clock_type_name={clock_type_name}.")
 
         # log compiled info at info level
         self.get_logger().info(f"Node initialized.\nFrames: {relevant_frames}\nTopics: {relevant_topics}\nParameters: {params_str}")
