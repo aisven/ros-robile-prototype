@@ -8,6 +8,7 @@ from rcl_interfaces.msg import ParameterDescriptor
 from geometry_msgs.msg import Twist, PoseStamped
 from sensor_msgs.msg import LaserScan
 from tf2_ros import Buffer, TransformListener, TransformException
+import tf2_geometry_msgs  # registers transformers for geometry_msgs types like PoseStamped
 from tf_transformations import euler_from_quaternion, quaternion_from_euler, quaternion_matrix
 
 # code format follows black default with max line length 160
@@ -35,10 +36,13 @@ class PotentialFieldController(Node):
         self.declare_parameter("v_max_linear", 0.6, ParameterDescriptor(description="max linear speed (m/s)"))
         self.declare_parameter("v_max_angular", 1.2, ParameterDescriptor(description="max angular speed (rad/s)"))
         self.declare_parameter("k_ang", 1.2, ParameterDescriptor(description="angular gain when orienting at goal"))
-        self.declare_parameter("approach_threshold", 0.25, ParameterDescriptor(description="distance to start orientation control (m)"))
-        self.declare_parameter("ang_threshold", 0.08, ParameterDescriptor(description="angular threshold to consider orientation reached (rad)"))
-        self.declare_parameter("pos_tolerance", 0.15, ParameterDescriptor(description="position tolerance to consider goal reached (m)"))
+        self.declare_parameter("approach_threshold", 0.30, ParameterDescriptor(description="distance to start orientation control (m)"))
+        self.declare_parameter("pos_tolerance", 0.05, ParameterDescriptor(description="position tolerance to consider goal reached (m)"))
+        self.declare_parameter("ang_tolerance", 0.05, ParameterDescriptor(description="angular tolerance to consider orientation reached (rad)"))
         self.declare_parameter("avoid_backwards", True, ParameterDescriptor(description="do not command negative linear.x (avoid moving backwards)"))
+        self.declare_parameter("tf_buffer_cache_duration", 0.25, ParameterDescriptor(description="duration in seconds for a transformation to be cached"))
+        self.declare_parameter("tf_lookup_timeout", 0.001, ParameterDescriptor(description="timeout in seconds for a transformation lookup"))
+        self.declare_parameter("controller_timer_period", 0.75, ParameterDescriptor(description="controller timer period in seconds"))
 
         # get parameter values
         self.k_a = self.get_parameter("k_a").value
@@ -49,9 +53,12 @@ class PotentialFieldController(Node):
         self.v_max_angular = self.get_parameter("v_max_angular").value
         self.k_ang = self.get_parameter("k_ang").value
         self.approach_threshold = self.get_parameter("approach_threshold").value
-        self.ang_threshold = self.get_parameter("ang_threshold").value
         self.pos_tolerance = self.get_parameter("pos_tolerance").value
+        self.ang_tolerance = self.get_parameter("ang_tolerance").value
         self.avoid_backwards = self.get_parameter("avoid_backwards").value
+        self.tf_buffer_cache_duration = self.get_parameter("tf_buffer_cache_duration").value
+        self.tf_lookup_timeout = self.get_parameter("tf_lookup_timeout").value
+        self.controller_timer_period = self.get_parameter("controller_timer_period").value
 
         # goal pose in odom frame
         quat_o = quaternion_from_euler(0.0, 0.0, GOAL_THETA_O)
@@ -71,7 +78,7 @@ class PotentialFieldController(Node):
 
         # infrastructure for getting transformation information
         # uses sim time if /use_sim_time param set in launch file
-        self.tf_buffer = Buffer()
+        self.tf_buffer = Buffer(cache_time=Duration(seconds=self.tf_buffer_cache_duration))
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         # infrastructure to publish velocity commands to the robot
@@ -83,7 +90,7 @@ class PotentialFieldController(Node):
         self.laser_frame = None
 
         # control timer (2 hz)
-        self.control_timer = self.create_timer(0.5, self.control_loop)
+        self.control_timer = self.create_timer(self.controller_timer_period, self.control_loop)
 
         # one-shot timer for initial logging after tf populates
         self.initial_log_statement_written = False
@@ -128,8 +135,9 @@ class PotentialFieldController(Node):
             f"k_a={self.k_a}, k_r={self.k_r}, rho_0={self.rho_0}, v_r_max={self.v_r_max}, "
             f"v_max_linear={self.v_max_linear}, v_max_angular={self.v_max_angular}, "
             f"k_ang={self.k_ang}, approach_threshold={self.approach_threshold}, "
-            f"ang_threshold={self.ang_threshold}, pos_tolerance={self.pos_tolerance}, "
-            f"avoid_backwards={self.avoid_backwards}, use_sim_time={use_sim_time}"
+            f"pos_tolerance={self.pos_tolerance}, ang_tolerance={self.ang_tolerance}, "
+            f"avoid_backwards={self.avoid_backwards}, use_sim_time={use_sim_time}",
+            f"tf_lookup_timeout={self.tf_lookup_timeout}, controller_timer_period={self.controller_timer_period}",
         )
 
         # check use_sim_time
@@ -163,13 +171,13 @@ class PotentialFieldController(Node):
 
         # check if transform from scanner to base is available
         scan_time = Time.from_msg(self.laser_data.header.stamp)
-        if not self.tf_buffer.can_transform("base_link", self.laser_frame, scan_time, Duration(seconds=0.1)):
+        if not self.tf_buffer.can_transform("base_link", self.laser_frame, scan_time, Duration(seconds=self.tf_lookup_timeout)):
             self.get_logger().warning("tf_s_to_b unavailable")
             return np.zeros(2)
 
         # lookup transform from scanner to base
         try:
-            tf_s_to_b = self.tf_buffer.lookup_transform("base_link", self.laser_frame, scan_time, Duration(seconds=0.1))
+            tf_s_to_b = self.tf_buffer.lookup_transform("base_link", self.laser_frame, scan_time, Duration(seconds=self.tf_lookup_timeout))
             t = np.array([tf_s_to_b.transform.translation.x, tf_s_to_b.transform.translation.y, tf_s_to_b.transform.translation.z])
             quat = [tf_s_to_b.transform.rotation.x, tf_s_to_b.transform.rotation.y, tf_s_to_b.transform.rotation.z, tf_s_to_b.transform.rotation.w]
             R = quaternion_matrix(quat)[:3, :3]  # rotation matrix (source to target)
@@ -239,13 +247,13 @@ class PotentialFieldController(Node):
 
         # check if transform from base to odom is available
         latest_time = Time()
-        if not self.tf_buffer.can_transform("odom", "base_link", latest_time, Duration(seconds=0.1)):
+        if not self.tf_buffer.can_transform("odom", "base_link", latest_time, Duration(seconds=self.tf_lookup_timeout)):
             self.get_logger().warning("tf_b_to_o unavailable.")
             return
 
         # extract current_yaw_o from tf_b_to_o
         try:
-            tf_b_to_o = self.tf_buffer.lookup_transform("odom", "base_link", latest_time, Duration(seconds=0.1))
+            tf_b_to_o = self.tf_buffer.lookup_transform("odom", "base_link", latest_time, Duration(seconds=self.tf_lookup_timeout))
             # self.get_logger().info(f"tf_b_to_o={tf_b_to_o}")
             # extract current yaw_o from transform rotation
             quat_o = [tf_b_to_o.transform.rotation.x, tf_b_to_o.transform.rotation.y, tf_b_to_o.transform.rotation.z, tf_b_to_o.transform.rotation.w]
@@ -257,13 +265,13 @@ class PotentialFieldController(Node):
             return
 
         # check if transform from odom to base is available
-        if not self.tf_buffer.can_transform("base_link", "odom", latest_time, Duration(seconds=0.1)):
+        if not self.tf_buffer.can_transform("base_link", "odom", latest_time, Duration(seconds=self.tf_lookup_timeout)):
             self.get_logger().warning("tf_o_to_b unavailable.")
             return
 
         # transform goal pose to base frame
         try:
-            goal_pose_b = self.tf_buffer.transform(self.goal_pose_o, "base_link", Duration(seconds=0.1))
+            goal_pose_b = self.tf_buffer.transform(self.goal_pose_o, "base_link", Duration(seconds=self.tf_lookup_timeout))
             goal_position_b_x = goal_pose_b.pose.position.x
             goal_position_b_y = goal_pose_b.pose.position.y
             goal_position_b = np.array([goal_position_b_x, goal_position_b_y])
@@ -278,8 +286,8 @@ class PotentialFieldController(Node):
             delta_yaw_o = GOAL_THETA_O - current_yaw_o
             # normalize to [-pi, pi]
             delta_yaw_o = (delta_yaw_o + math.pi) % (2 * math.pi) - math.pi
-            if abs(delta_yaw_o) < self.ang_threshold:
-                # fully reached, stop and set flag (log only once)
+            if abs(delta_yaw_o) < self.ang_tolerance:
+                # stop and set flag
                 if not self.goal_reached:
                     v_command = Twist()
                     self.v_command_publisher.publish(v_command)
@@ -307,18 +315,20 @@ class PotentialFieldController(Node):
         v_total_magnitude = np.linalg.norm(v_total_b)
         # avoid division by zero or very small values
         if v_total_magnitude > 0.005:
-            alpha_b = math.atan2(v_total_y_b, v_total_x_b)
+            steering_direction_b = math.atan2(v_total_y_b, v_total_x_b)
         else:
-            alpha_b = 0.0
+            steering_direction_b = 0.0
 
         # compute desired direction to goal position in base frame
         desired_direction_angle_b = math.atan2(goal_position_b[1], goal_position_b[0])
 
-        # select angular based on distance: exact to goal dir if approaching, else from total field
+        # select angular based on distance: , else from total field
         if distance_robot_to_goal_b < self.approach_threshold:
+            # towards direction of goal if approaching
             v_angular_z_b = np.clip(self.k_ang * desired_direction_angle_b, -self.v_max_angular, self.v_max_angular)
         else:
-            v_angular_z_b = np.clip(self.k_ang * alpha_b, -self.v_max_angular, self.v_max_angular)
+            # towards direction governed by the potential field
+            v_angular_z_b = np.clip(self.k_ang * steering_direction_b, -self.v_max_angular, self.v_max_angular)
 
         # linear forward (clip, avoid backwards if set)
         v_linear_x_b = v_total_x_b
