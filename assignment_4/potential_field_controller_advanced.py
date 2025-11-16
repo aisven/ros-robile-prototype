@@ -229,10 +229,11 @@ class PotentialFieldController(Node):
 
     def control_loop(self):
         if self.goal_reached:
-            # already reached, keep stopped
+            # already reached the goal
             return
 
         # update goal stamp to current time for latest transform
+        # note that if our goal was dynamic we should update all of its pose here
         self.goal_pose_o.header.stamp = self.get_clock().now().to_msg()
         goal_time = Time.from_msg(self.goal_pose_o.header.stamp)
 
@@ -245,16 +246,18 @@ class PotentialFieldController(Node):
         # extract current_yaw_o from tf_b_to_o
         try:
             tf_b_to_o = self.tf_buffer.lookup_transform("odom", "base_link", latest_time, Duration(seconds=0.1))
+            # self.get_logger().info(f"tf_b_to_o={tf_b_to_o}")
             # extract current yaw_o from transform rotation
             quat_o = [tf_b_to_o.transform.rotation.x, tf_b_to_o.transform.rotation.y, tf_b_to_o.transform.rotation.z, tf_b_to_o.transform.rotation.w]
             # rotation from odom to base_link; euler gives yaw of base w.r.t odom
             _, _, current_yaw_o = euler_from_quaternion(quat_o)
+            self.get_logger().info(f"current_yaw_o={current_yaw_o}")
         except TransformException as e:
             self.get_logger().warning(f"Failed to extract current_yaw_o from tf_b_to_o. {e}")
             return
 
         # check if transform from odom to base is available
-        if not self.tf_buffer.can_transform("base_link", "odom", goal_time, Duration(seconds=0.1)):
+        if not self.tf_buffer.can_transform("base_link", "odom", latest_time, Duration(seconds=0.1)):
             self.get_logger().warning("tf_o_to_b unavailable.")
             return
 
