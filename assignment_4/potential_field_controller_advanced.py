@@ -29,6 +29,8 @@ class PotentialFieldController(Node):
         super().__init__("potential_field_controller")
 
         # declare node parameters
+        self.declare_parameter("holonomic", True, ParameterDescriptor(description="holonomic instead of non-holonomic mobile robot"))
+        self.declare_parameter("conic_a", True, ParameterDescriptor(description="conic instead of quadratic attractive potential field"))
         self.declare_parameter("k_a", 0.6, ParameterDescriptor(description="attraction gain"))
         self.declare_parameter("k_r", 0.8, ParameterDescriptor(description="repulsion gain"))
         self.declare_parameter("rho_0", 1.5, ParameterDescriptor(description="repulsion threshold (m)"))
@@ -45,6 +47,8 @@ class PotentialFieldController(Node):
         self.declare_parameter("controller_timer_period", 0.75, ParameterDescriptor(description="controller timer period in seconds"))
 
         # get parameter values
+        self.holonomic = self.get_parameter("holonomic").value
+        self.conic_a = self.get_parameter("conic_a").value
         self.k_a = self.get_parameter("k_a").value
         self.k_r = self.get_parameter("k_r").value
         self.rho_0 = self.get_parameter("rho_0").value
@@ -149,19 +153,60 @@ class PotentialFieldController(Node):
         self.get_logger().info(f"Node initialized.\nFrames: {relevant_frames}\nTopics: {relevant_topics}\nParameters: {params_str}")
 
     def compute_attractive_b(self, goal_pos_b):
-        # compute attractive velocity in base frame
         # goal_pos_b is the 2D position of the goal in the base frame
+        # also goal_pos_b is a direction from the robot to the goal
+        if self.conic_a:
+            return self.compute_attractive_conic_b(goal_pos_b)
+        else:
+            return self.compute_attractive_quadratic_b(goal_pos_b)
 
-        # current distance to goal
-        distance_robot_to_goal_b = np.linalg.norm(goal_pos_b)
-        if distance_robot_to_goal_b == 0.0:
+    def compute_attractive_quadratic_b(self, goal_pos_b):
+        # goal_pos_b is the 2D position of the goal in the base frame
+        # also goal_pos_b is a direction from the robot to the goal
+
+        # quadratic attractive potential field in base frame
+        # U_a = 1/2 * k_a * ||q||^2
+        # quadratic attractive velocity in base frame
+        # dU/dq = k_a * q
+        # here the total linear velocity will be linearly decreasing towards the goal
+        # as it is proportional to the distance of the robot to the goal
+
+        if goal_pos_b is None:
             return np.zeros(2)
 
-        # unit vector
-        direction_robot_to_goal = goal_pos_b / distance_robot_to_goal_b
+        # ensure numpy array
+        q = np.asarray(goal_pos_b, dtype=float)
 
-        # direction scaled by gain (constant speed towards goal)
-        return self.k_a * direction_robot_to_goal
+        # if already at goal or numerical zero return zero
+        if np.linalg.norm(q) == 0.0:
+            return np.zeros(2)
+
+        v_a_b = self.k_a * q
+        return v_a_b
+
+    def compute_attractive_conic_b(self, goal_pos_b):
+        # goal_pos_b is the 2D position of the goal in the base frame
+        # also goal_pos_b is a direction from the robot to the goal
+
+        # conic attractive potential field in base frame
+        # U_a = k_a * ||q||
+        # conic attractive velocity in base frame
+        # dU/dq = k_a * q / ||q||
+        # here the total linear velocity will be a constant
+
+        if goal_pos_b is None:
+            return np.zeros(2)
+
+        # ensure numpy array
+        q = np.asarray(goal_pos_b, dtype=float)
+
+        # if already at goal or numerical zero return zero
+        dist = np.linalg.norm(q)
+        if dist == 0.0:
+            return np.zeros(2)
+
+        v_a_b = self.k_a * (q / dist)
+        return v_a_b
 
     def compute_repulsive_b(self):
         # compute summed repulsive velocities in base_link frame from laser points (batched/vectorized)
@@ -241,6 +286,17 @@ class PotentialFieldController(Node):
 
         return rep_total_b
 
+    def create_velocity_command(self, v_linear_x, v_linear_y, v_angular_z):
+        twist = Twist()
+        twist.linear.x = v_linear_x
+        if self.holonomic:
+            twist.linear.y = v_linear_y
+        else:
+            # no desired sideways motion if mobile robot is non-holonomic
+            twist.linear.y = 0.0
+        twist.angular.z = v_angular_z
+        return twist
+
     def control_loop(self):
         if self.goal_reached:
             # already reached the goal
@@ -306,7 +362,7 @@ class PotentialFieldController(Node):
                 # orient in place to absolute goal theta
                 v_command = Twist()
                 v_command.linear.x = 0.0
-                v_command.angular.z = np.clip(0.9 * delta_yaw_o, -self.v_max_angular, self.v_max_angular)
+                v_command.angular.z = np.clip(0.7 * delta_yaw_o, -self.v_max_angular, self.v_max_angular)
                 self.v_command_publisher.publish(v_command)
                 return
 
@@ -315,7 +371,7 @@ class PotentialFieldController(Node):
         v_a_b = self.compute_attractive_b(goal_position_b)
         # compute repulsive force in base frame
         v_r_b = self.compute_repulsive_b()
-        # total velocity in base frame
+        # total desired velocity in base frame
         v_total_b = v_a_b + v_r_b
         v_total_x_b, v_total_y_b = v_total_b[0], v_total_b[1]
 
@@ -330,22 +386,23 @@ class PotentialFieldController(Node):
         # compute desired direction to goal position in base frame
         desired_direction_angle_b = math.atan2(goal_position_b[1], goal_position_b[0])
 
-        # select angular based on distance: , else from total field
         if distance_robot_to_goal_b < self.approach_threshold:
             # towards direction of goal if approaching
-            v_angular_z_b = np.clip(self.k_ang * desired_direction_angle_b, -self.v_max_angular, self.v_max_angular)
+            v_angular_clipped_z_b = np.clip(self.k_ang * desired_direction_angle_b, -self.v_max_angular, self.v_max_angular)
         else:
             # towards direction governed by the potential field
-            v_angular_z_b = np.clip(self.k_ang * steering_direction_b, -self.v_max_angular, self.v_max_angular)
+            v_angular_clipped_z_b = np.clip(self.k_ang * steering_direction_b, -self.v_max_angular, self.v_max_angular)
 
-        # linear forward (clip, avoid backwards if set)
-        v_linear_x_b = v_total_x_b
-        v_linear_x_b = np.clip(v_linear_x_b, 0.0 if self.avoid_backwards else -self.v_max_linear, self.v_max_linear)
+        # velocity is clipped
+        # to avoid fast and the furious motions at all times
+        # also to avoid both backwards motion if so configured
+        v_total_clipped_x_b = np.clip(v_total_x_b, 0.0 if self.avoid_backwards else -self.v_max_linear, self.v_max_linear)
+        v_total_clipped_y_b = np.clip(v_total_y_b, -self.v_max_linear, self.v_max_linear)
 
-        # publish twist
-        v_command = Twist()
-        v_command.linear.x = v_linear_x_b
-        v_command.angular.z = v_angular_z_b
+        # create command
+        v_command = self.create_velocity_command(v_total_clipped_x_b, v_total_clipped_y_b, v_angular_clipped_z_b)
+
+        # publish command
         self.v_command_publisher.publish(v_command)
 
 
