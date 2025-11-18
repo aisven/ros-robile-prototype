@@ -44,7 +44,7 @@ class PotentialFieldController(Node):
         self.declare_parameter("avoid_backwards", False, ParameterDescriptor(description="do not command negative linear.x (avoid moving backwards)"))
         self.declare_parameter("tf_buffer_cache_duration", 0.25, ParameterDescriptor(description="duration in seconds for a transformation to be cached"))
         self.declare_parameter("tf_lookup_timeout", 0.05, ParameterDescriptor(description="timeout in seconds for a transformation lookup"))
-        self.declare_parameter("controller_timer_period", 0.75, ParameterDescriptor(description="controller timer period in seconds"))
+        self.declare_parameter("controller_timer_period", 0.2, ParameterDescriptor(description="controller timer period in seconds"))
 
         # get parameter values
         self.holonomic = self.get_parameter("holonomic").value
@@ -95,6 +95,8 @@ class PotentialFieldController(Node):
 
         # control timer (2 hz)
         self.control_timer = self.create_timer(self.controller_timer_period, self.control_loop)
+        self.control_counter = 0
+        self.do_log = False
 
         # one-shot timer for initial logging after tf populates
         self.initial_log_statement_written = False
@@ -219,7 +221,7 @@ class PotentialFieldController(Node):
         # check if transform from scanner to base is available
         scan_time = Time.from_msg(self.laser_data.header.stamp)
         if not self.tf_buffer.can_transform("base_link", self.laser_frame, scan_time, Duration(seconds=self.tf_lookup_timeout)):
-            self.get_logger().warning("tf_s_to_b unavailable")
+            self.get_logger().warning("tf_s_to_b unavailable!")
             return np.zeros(2)
 
         # lookup transform from scanner to base
@@ -238,12 +240,7 @@ class PotentialFieldController(Node):
         ranges_np = np.array(self.laser_data.ranges)
 
         # mask for valid rays (finite ranges, within rho_0, and sensor limits)
-        valid_mask = (
-                np.isfinite(ranges_np)
-                & (ranges_np < self.rho_0)
-                & (ranges_np > self.laser_data.range_min)
-                & (ranges_np < self.laser_data.range_max)
-        )
+        valid_mask = np.isfinite(ranges_np) & (ranges_np < self.rho_0) & (ranges_np > self.laser_data.range_min) & (ranges_np < self.laser_data.range_max)
 
         if not np.any(valid_mask):
             return np.zeros(2)
@@ -315,6 +312,9 @@ class PotentialFieldController(Node):
             # already reached the goal
             return
 
+        self.control_counter += 1
+        self.do_log = self.control_counter % 20
+
         # update goal stamp to current time for latest transform
         # note that if our goal was dynamic we should update all of its pose here
         self.goal_pose_o.header.stamp = rclpy.time.Time().to_msg()
@@ -325,7 +325,7 @@ class PotentialFieldController(Node):
         # check if transform from base to odom is available
         latest_time = Time()
         if not self.tf_buffer.can_transform("odom", "base_link", latest_time, Duration(seconds=self.tf_lookup_timeout)):
-            self.get_logger().warning("tf_b_to_o unavailable.")
+            self.get_logger().warning("tf_b_to_o unavailable!")
             return
 
         # extract current_yaw_o from tf_b_to_o
@@ -336,14 +336,15 @@ class PotentialFieldController(Node):
             quat_o = [tf_b_to_o.transform.rotation.x, tf_b_to_o.transform.rotation.y, tf_b_to_o.transform.rotation.z, tf_b_to_o.transform.rotation.w]
             # rotation from odom to base_link; euler gives yaw of base w.r.t odom
             _, _, current_yaw_o = euler_from_quaternion(quat_o)
-            # self.get_logger().info(f"current_yaw_o={current_yaw_o}")
+            if self.do_log:
+                self.get_logger().info(f"current_yaw_o={current_yaw_o}")
         except TransformException as e:
             self.get_logger().warning(f"Failed to extract current_yaw_o from tf_b_to_o. {e}")
             return
 
         # check if transform from odom to base is available
         if not self.tf_buffer.can_transform("base_link", "odom", latest_time, Duration(seconds=self.tf_lookup_timeout)):
-            self.get_logger().warning("tf_o_to_b unavailable.")
+            self.get_logger().warning("tf_o_to_b unavailable!")
             return
 
         # transform goal pose to base frame
@@ -359,13 +360,15 @@ class PotentialFieldController(Node):
 
         # check if position reached
         if distance_robot_to_goal_b < self.pos_tolerance:
-            self.get_logger().info(f"distance_robot_to_goal_b={distance_robot_to_goal_b} < self.pos_tolerance={self.pos_tolerance}")
+            if self.do_log:
+                self.get_logger().info(f"distance_robot_to_goal_b={distance_robot_to_goal_b} < self.pos_tolerance={self.pos_tolerance}")
             # compute orientation error in odom frame
             delta_yaw_o = GOAL_THETA_O - current_yaw_o
             # normalize to [-pi, pi]
             delta_yaw_o = (delta_yaw_o + math.pi) % (2 * math.pi) - math.pi
             if abs(delta_yaw_o) < self.ang_tolerance:
-                self.get_logger().info(f"abs(delta_yaw_o)={abs(delta_yaw_o)} < self.ang_tolerance={self.ang_tolerance}")
+                if self.do_log:
+                    self.get_logger().info(f"abs(delta_yaw_o)={abs(delta_yaw_o)} < self.ang_tolerance={self.ang_tolerance}")
                 # stop and set flag
                 if not self.goal_reached:
                     v_command = Twist()
