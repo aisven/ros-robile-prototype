@@ -178,7 +178,8 @@ class PotentialFieldController(Node):
         q = np.asarray(goal_pos_b, dtype=float)
 
         # if already at goal or numerical zero return zero
-        if np.linalg.norm(q) == 0.0:
+        eps = 1e-6
+        if np.linalg.norm(q) < eps:
             return np.zeros(2)
 
         v_a_b = self.k_a * q
@@ -201,8 +202,9 @@ class PotentialFieldController(Node):
         q = np.asarray(goal_pos_b, dtype=float)
 
         # if already at goal or numerical zero return zero
+        eps = 1e-6
         dist = np.linalg.norm(q)
-        if dist == 0.0:
+        if dist < eps:
             return np.zeros(2)
 
         v_a_b = self.k_a * (q / dist)
@@ -267,11 +269,20 @@ class PotentialFieldController(Node):
             return np.zeros(2)
 
         # compute unit away directions: -obs_vec_b / dist
-        unit_away_b = -obs_vecs_b[post_mask] / dists[post_mask, np.newaxis]
+        post_dists = dists[post_mask]
+
+        # guard against zero or tiny distances to avoid div-by-zero
+        eps = 1e-4
+        safe_dists = np.maximum(post_dists, eps)
+
+        unit_away_b = -obs_vecs_b[post_mask] / safe_dists[:, np.newaxis]
 
         # compute scalars: k_r * (1/dist - 1/rho_0) / dist^2
-        post_dists = dists[post_mask]
-        scalars = self.k_r * (1.0 / post_dists - 1.0 / self.rho_0) / (post_dists**2)
+        # use safe_dists in denominators
+        scalars = self.k_r * (1.0 / safe_dists - 1.0 / self.rho_0) / (safe_dists**2)
+
+        # if any scalar becomes non-finite (shouldn't), clamp to zero
+        scalars = np.where(np.isfinite(scalars), scalars, 0.0)
 
         # individual v_rep_b
         v_reps_b = scalars[:, np.newaxis] * unit_away_b
@@ -291,10 +302,12 @@ class PotentialFieldController(Node):
         twist.linear.x = v_linear_x
         if self.holonomic:
             twist.linear.y = v_linear_y
+            # for holonomic dampen angular velocities to avoid some oscillations
+            twist.angular.z = 0.1 * v_angular_z
         else:
             # no desired sideways motion if mobile robot is non-holonomic
             twist.linear.y = 0.0
-        twist.angular.z = v_angular_z
+            twist.angular.z = v_angular_z
         return twist
 
     def control_loop(self):
@@ -323,7 +336,7 @@ class PotentialFieldController(Node):
             quat_o = [tf_b_to_o.transform.rotation.x, tf_b_to_o.transform.rotation.y, tf_b_to_o.transform.rotation.z, tf_b_to_o.transform.rotation.w]
             # rotation from odom to base_link; euler gives yaw of base w.r.t odom
             _, _, current_yaw_o = euler_from_quaternion(quat_o)
-            self.get_logger().info(f"current_yaw_o={current_yaw_o}")
+            # self.get_logger().info(f"current_yaw_o={current_yaw_o}")
         except TransformException as e:
             self.get_logger().warning(f"Failed to extract current_yaw_o from tf_b_to_o. {e}")
             return
