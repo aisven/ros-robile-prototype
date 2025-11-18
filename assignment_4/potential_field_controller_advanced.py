@@ -14,7 +14,7 @@ from tf_transformations import euler_from_quaternion, quaternion_from_euler, qua
 # code format follows black default with max line length 160
 # black --line-length 160
 
-# goal pose in odom frame (assignment)
+# goal pose in odom frame
 GOAL_X_O = 4.0  # x in odom (m)
 GOAL_Y_O = 10.0  # y in odom (m)
 GOAL_THETA_O = -1.0  # theta in odom (rad)
@@ -229,7 +229,7 @@ class PotentialFieldController(Node):
             tf_s_to_b = self.tf_buffer.lookup_transform("base_link", self.laser_frame, scan_time, Duration(seconds=self.tf_lookup_timeout))
             t = np.array([tf_s_to_b.transform.translation.x, tf_s_to_b.transform.translation.y, tf_s_to_b.transform.translation.z])
             quat = [tf_s_to_b.transform.rotation.x, tf_s_to_b.transform.rotation.y, tf_s_to_b.transform.rotation.z, tf_s_to_b.transform.rotation.w]
-            R = quaternion_matrix(quat)[:3, :3]  # rotation matrix (source to target)
+            R = quaternion_matrix(quat)[:3, :3]
         except TransformException as e:
             self.get_logger().warning(f"Failed to get rotation matrix from laser frame to base frame. {e}")
             return np.zeros(2)
@@ -239,7 +239,7 @@ class PotentialFieldController(Node):
         angles = np.arange(n_rays) * self.laser_data.angle_increment + self.laser_data.angle_min
         ranges_np = np.array(self.laser_data.ranges)
 
-        # mask for valid rays (finite ranges, within rho_0, and sensor limits)
+        # mask for valid rays
         valid_mask = np.isfinite(ranges_np) & (ranges_np < self.rho_0) & (ranges_np > self.laser_data.range_min) & (ranges_np < self.laser_data.range_max)
 
         if not np.any(valid_mask):
