@@ -414,8 +414,24 @@ class PotentialFieldController(Node):
         # velocity is clipped
         # to avoid fast and the furious motions at all times
         # also to avoid both backwards motion if so configured
-        v_total_clipped_x_b = np.clip(v_total_x_b, 0.0 if self.avoid_backwards else -self.v_max_linear, self.v_max_linear)
-        v_total_clipped_y_b = np.clip(v_total_y_b, -self.v_max_linear, self.v_max_linear)
+
+        if self.holonomic:
+            # holonomic: keep independent clipping for x and y
+            v_total_clipped_x_b = np.clip(v_total_x_b, 0.0 if self.avoid_backwards else -self.v_max_linear,                              self.v_max_linear)
+            v_total_clipped_y_b = np.clip(v_total_y_b, -self.v_max_linear, self.v_max_linear)
+        else:
+            # forward speed in base_link frame
+            v_forward = v_total_x_b
+
+            v_total_clipped_x_b = np.clip(v_forward, 0.0 if self.avoid_backwards else -self.v_max_linear,
+                                          self.v_max_linear)
+
+            # differential drive cannot move laterally
+            v_total_clipped_y_b = 0.0
+
+            # angular velocity: steer toward the total potential field vector
+            v_angular_clipped_z_b = np.clip(self.k_ang * math.atan2(v_total_y_b, v_total_x_b), -self.v_max_angular,
+                                            self.v_max_angular)
 
         # create command
         v_command = self.create_velocity_command(v_total_clipped_x_b, v_total_clipped_y_b, v_angular_clipped_z_b)
