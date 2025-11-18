@@ -359,17 +359,19 @@ class PotentialFieldController(Node):
 
         # check if position reached
         if distance_robot_to_goal_b < self.pos_tolerance:
+            self.get_logger().info(f"distance_robot_to_goal_b={distance_robot_to_goal_b} < self.pos_tolerance={self.pos_tolerance}")
             # compute orientation error in odom frame
             delta_yaw_o = GOAL_THETA_O - current_yaw_o
             # normalize to [-pi, pi]
             delta_yaw_o = (delta_yaw_o + math.pi) % (2 * math.pi) - math.pi
             if abs(delta_yaw_o) < self.ang_tolerance:
+                self.get_logger().info(f"abs(delta_yaw_o)={abs(delta_yaw_o)} < self.ang_tolerance={self.ang_tolerance}")
                 # stop and set flag
                 if not self.goal_reached:
                     v_command = Twist()
                     self.v_command_publisher.publish(v_command)
                     self.goal_reached = True
-                    self.get_logger().info("Goal reached and oriented!")
+                    self.get_logger().info("Goal pose reached.")
                 return
             else:
                 # orient in place to absolute goal theta
