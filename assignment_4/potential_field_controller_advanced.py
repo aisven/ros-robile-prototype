@@ -37,7 +37,7 @@ class PotentialFieldController(Node):
         self.declare_parameter("v_r_max", 1.2, ParameterDescriptor(description="max repulsive velocity (m/s)"))
         self.declare_parameter("v_max_linear", 0.75, ParameterDescriptor(description="max linear speed (m/s)"))
         self.declare_parameter("v_max_angular", 0.785399, ParameterDescriptor(description="max angular speed (rad/s)"))
-        self.declare_parameter("k_ang", 1.44, ParameterDescriptor(description="angular gain when orienting at goal"))
+        self.declare_parameter("k_ang", 2.0, ParameterDescriptor(description="angular gain when orienting at goal"))
         self.declare_parameter("approach_threshold", 0.1, ParameterDescriptor(description="distance to start orientation control (m)"))
         self.declare_parameter("pos_tolerance", 0.05, ParameterDescriptor(description="position tolerance to consider goal reached (m)"))
         self.declare_parameter("ang_tolerance", 0.05, ParameterDescriptor(description="angular tolerance to consider orientation reached (rad)"))
