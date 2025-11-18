@@ -44,7 +44,7 @@ class PotentialFieldController(Node):
         self.declare_parameter("avoid_backwards", False, ParameterDescriptor(description="do not command negative linear.x (avoid moving backwards)"))
         self.declare_parameter("tf_buffer_cache_duration", 0.25, ParameterDescriptor(description="duration in seconds for a transformation to be cached"))
         self.declare_parameter("tf_lookup_timeout", 0.05, ParameterDescriptor(description="timeout in seconds for a transformation lookup"))
-        self.declare_parameter("controller_timer_period", 0.2, ParameterDescriptor(description="controller timer period in seconds"))
+        self.declare_parameter("controller_timer_period", 0.15, ParameterDescriptor(description="controller timer period in seconds"))
 
         # get parameter values
         self.holonomic = self.get_parameter("holonomic").value
