@@ -303,7 +303,7 @@ class PotentialFieldController(Node):
         if self.holonomic:
             twist.linear.y = v_linear_y
             # for holonomic dampen angular velocities to avoid some oscillations
-            twist.angular.z = 0.1 * v_angular_z
+            twist.angular.z = 0.7 * v_angular_z
         else:
             # no desired sideways motion if mobile robot is non-holonomic
             twist.linear.y = 0.0
